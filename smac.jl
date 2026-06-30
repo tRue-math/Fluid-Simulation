@@ -110,7 +110,7 @@ function compute_tentative_velocity_interior!(sim::CavitySimulation)
                           (v[i,j-1] - 2.0*v[i,j] + v[i,j+1]) / dy^2 )
 
             # 浮力項 ブシネ近似
-            buov = (Ra * Pr^2) * tv
+            buov = Ra * Pr * tv
 
             # 圧力勾配項
             grad_p_y = (p[i,j+1] - p[i,j]) / dy
