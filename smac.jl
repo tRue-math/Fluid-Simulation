@@ -39,6 +39,10 @@ function CavitySimulation(; Nx, Ny, Pr, Ra, dt, dx, dy)
 end
 
 function step!(sim::CavitySimulation)
+    #0. (古い速度場を使って)温度場の計算
+    # 次のステップまで使われないので，更新は遅らせる
+    compute_temperature_interior!(sim)
+
     #1. 仮の速度場の更新
     compute_tentative_velocity_interior!(sim)
     apply_velocity_bc!(sim)
@@ -51,8 +55,8 @@ function step!(sim::CavitySimulation)
     apply_velocity_bc!(sim)
     apply_pressure_bc!(sim)
 
-    #4. 温度場の計算
-    compute_temperature_interior!(sim)
+    #4. 温度場の更新
+    sim.T .= sim.T_new
     apply_temperature_bc!(sim)
 end
 
@@ -323,14 +327,13 @@ function compute_temperature_interior!(sim::CavitySimulation)
         end
     end
     
-    # 更新
-    T .= T_new
+    # 更新はここでは行わない
 end
 
 
 function main()
     Nx, Ny = 40, 40
-    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=1e5, dt=1e-4, dx=1.0/Nx, dy=1.0/Ny)
+    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dt=1e-4, dx=1.0/Nx, dy=1.0/Ny)
 
     total_steps = 2000
     output_interval = 20
