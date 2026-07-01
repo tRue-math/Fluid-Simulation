@@ -1,3 +1,4 @@
+using Printf
 using Plots
 
 Base.@kwdef mutable struct CavitySimulation
@@ -19,7 +20,7 @@ Base.@kwdef mutable struct CavitySimulation
     div::Matrix{Float64}
 end
 
-function CavitySimulation(; Nx, Ny, Pr, Ra, dt, dx, dy)
+function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy)
     # スタガード格子と仮想セルを考慮した配列の事前確保
     u = zeros(Nx + 1, Ny + 2); v = zeros(Nx + 2, Ny + 1)
     u_star = zeros(Nx + 1, Ny + 2); v_star = zeros(Nx + 2, Ny + 1)
@@ -31,7 +32,9 @@ function CavitySimulation(; Nx, Ny, Pr, Ra, dt, dx, dy)
     
     omega_opt = 2.0 / (1.0 + sqrt(1.0 - rho_jacobi^2))
 
-    sim = CavitySimulation(Nx, Ny, Pr, Ra, dt, dx, dy, omega_opt,
+    dt_safe = 0.2 / (1.0/dx^2 + 1.0/dy^2)
+
+    sim = CavitySimulation(Nx, Ny, Pr, Ra, dt_safe, dx, dy, omega_opt,
                            u, v, u_star, v_star, p, p_delta, T, T_new, div)
 
     apply_temperature_bc!(sim)
@@ -332,11 +335,12 @@ end
 
 
 function main()
-    Nx, Ny = 40, 40
-    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dt=1e-4, dx=1.0/Nx, dy=1.0/Ny)
+    Nx, Ny = 60, 60
+    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Nx, dy=1.0/Ny)
 
-    total_steps = 2000
-    output_interval = 20
+    target_time = 0.2
+    total_steps = round(Int, target_time / sim.dt)
+    output_interval = total_steps / 100
 
     println("流体シミュレーションを実行中...")
     
@@ -352,7 +356,7 @@ function main()
             
             # ヒートマップ描画を変数 plt に保存
             plt = heatmap(1:Nx, 1:Ny, T_plot, 
-                    title="Cavity Flow - Step: $step", 
+                    title=@sprintf("Cavity Flow - Time: %.3f", step * sim.dt), 
                     c=:thermal,          # カラーマップ (赤〜青)
                     aspect_ratio=:equal, # 縦横比を1:1に
                     xlims=(1, Nx), ylims=(1, Ny),
@@ -363,7 +367,7 @@ function main()
             # ==========================================
             # ★ 速度ベクトル (矢印) の追加プロット
             # ==========================================
-            skip = 3      # 矢印を描く間隔 (全セルに描くと真っ黒になるので間引く)
+            skip = round(Int, Nx / 15)      # 矢印を描く間隔 (全セルに描くと真っ黒になるので間引く)
             scale = 0.05  # 矢印の長さを調整するスケール係数
             
             xs, ys, us, vs = Float64[], Float64[], Float64[], Float64[]
