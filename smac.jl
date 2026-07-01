@@ -345,61 +345,64 @@ function main()
     println("流体シミュレーションを実行中...")
     
     # アニメーション用の空の箱を用意
-    anim = Animation()
+    anim_T = Animation()
+    anim_p = Animation()
 
     for step in 1:total_steps
         step!(sim)
 
         if step % output_interval == 0
-            # 内部セルのみを抽出し、Plots用に転置 (') して渡す
-            T_plot = sim.T[2:Nx+1, 2:Ny+1]'
-            
-            # ヒートマップ描画を変数 plt に保存
-            plt = heatmap(1:Nx, 1:Ny, T_plot, 
-                    title=@sprintf("Cavity Flow - Time: %.3f", step * sim.dt), 
-                    c=:thermal,          # カラーマップ (赤〜青)
-                    aspect_ratio=:equal, # 縦横比を1:1に
-                    xlims=(1, Nx), ylims=(1, Ny),
-                    clim=(-0.5, 0.5),    # カラーバーの最小・最大値を固定
-                    colorbar_title="Temperature",
-                    framestyle=:box)
-            
-            # ==========================================
-            # ★ 速度ベクトル (矢印) の追加プロット
-            # ==========================================
+            # --- 速度ベクトルの共通計算 ---
             skip = round(Int, Nx / 15)      # 矢印を描く間隔 (全セルに描くと真っ黒になるので間引く)
             scale = 0.05  # 矢印の長さを調整するスケール係数
-            
             xs, ys, us, vs = Float64[], Float64[], Float64[], Float64[]
             
             for i in 1:skip:Nx
                 for j in 1:skip:Ny
-                    # スタガード格子なので、セル中心の速度を周囲の境界から補間して求める
-                    # 内部セルのインデックスは[i+1, j+1]に対応します
                     uc = (sim.u[i, j+1] + sim.u[i+1, j+1]) / 2.0
                     vc = (sim.v[i+1, j] + sim.v[i+1, j+1]) / 2.0
                     
-                    # 速度がほぼ0の場所は矢印を描かないようにする (見栄えのため)
                     if sqrt(uc^2 + vc^2) > 1e-3
-                        push!(xs, i)
-                        push!(ys, j)
-                        push!(us, uc * scale)
-                        push!(vs, vc * scale)
+                        push!(xs, i); push!(ys, j)
+                        push!(us, uc * scale); push!(vs, vc * scale)
                     end
                 end
             end
+
+            # --- 1. 温度場 (T) のプロット ---
+            T_plot = sim.T[2:Nx+1, 2:Ny+1]'
+            plt_T = heatmap(1:Nx, 1:Ny, T_plot, 
+                    title=@sprintf("Temperature - Time: %.3f", step * sim.dt), 
+                    c=:thermal,
+                    aspect_ratio=:equal,
+                    xlims=(1, Nx), ylims=(1, Ny),
+                    clim=(-0.5, 0.5), # 温度は範囲が固定なので指定
+                    colorbar_title="T",
+                    framestyle=:box)
             
-            # ヒートマップの上に白い矢印を重ねて描画する (quiver!)
-            quiver!(plt, xs, ys, quiver=(us, vs), color=:white, linewidth=1.0)
+            quiver!(plt_T, xs, ys, quiver=(us, vs), color=:white, linewidth=1.0)
+            frame(anim_T, plt_T)
+
+            # --- 2. 圧力場 (p) のプロット ---
+            p_plot = sim.p[2:Nx+1, 2:Ny+1]'
+            plt_p = heatmap(1:Nx, 1:Ny, p_plot, 
+                    title=@sprintf("Pressure - Time: %.3f", step * sim.dt), 
+                    c=:viridis,       # 圧力用には別のカラーマップ(緑〜黄など)を使用
+                    aspect_ratio=:equal,
+                    xlims=(1, Nx), ylims=(1, Ny),
+                    # climは指定しない（自動スケール）
+                    colorbar_title="P",
+                    framestyle=:box)
             
-            # 描画したグラフをフレームとしてアニメーションに追加
-            frame(anim, plt)
+            quiver!(plt_p, xs, ys, quiver=(us, vs), color=:white, linewidth=1.0)
+            frame(anim_p, plt_p)
         end
     end
 
     # GIFアニメーションとして保存
-    gif(anim, "cavity_flow.gif", fps=15)
-    println("✅ cavity_flow.gif の生成が完了しました！")
+    gif(anim_T, "cavity_flow_T.gif", fps=15)
+    gif(anim_p, "cavity_flow_p.gif", fps=15)
+    println("✅ cavity_flow_T.gif と cavity_flow_p.gif の生成が完了しました！")
 end
 
 # 実行
