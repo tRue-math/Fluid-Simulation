@@ -198,8 +198,6 @@ function solve_poisson_sor!(sim::CavitySimulation)
                 p_delta_old = p_delta[i, j]
                 
                 # 5点差分から導かれる次の値
-                p_delta_new = ((p[i+1, j] + p[i-1, j]) * idx2 +
-                               (p[i, j+1] + p[i, j-1]) * idy2 - div[i, j] / dt) / beta
                 p_delta_new = ((p_delta[i+1, j] + p_delta[i-1, j]) * idx2 +
                                (p_delta[i, j+1] + p_delta[i, j-1]) * idy2 - div[i, j] / dt) / beta
                 
