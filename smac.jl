@@ -18,9 +18,12 @@ Base.@kwdef mutable struct CavitySimulation
     
     # ポアソン方程式の右辺（発散）用
     div::Matrix{Float64}
+
+    # 熱源を左右の壁に設定するか、上下の壁に設定するかを切り替えるフラグ
+    left_right::Bool
 end
 
-function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy)
+function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true)
     # スタガード格子と仮想セルを考慮した配列の事前確保
     u = zeros(Nx + 1, Ny + 2); v = zeros(Nx + 2, Ny + 1)
     u_star = zeros(Nx + 1, Ny + 2); v_star = zeros(Nx + 2, Ny + 1)
@@ -35,7 +38,7 @@ function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy)
     dt_safe = 0.2 / (1.0/dx^2 + 1.0/dy^2)
 
     sim = CavitySimulation(Nx, Ny, Pr, Ra, dt_safe, dx, dy, omega_opt,
-                           u, v, u_star, v_star, p, p_delta, T, T_new, div)
+                           u, v, u_star, v_star, p, p_delta, T, T_new, div, left_right)
 
     apply_temperature_bc!(sim)
     return sim
@@ -240,17 +243,32 @@ function apply_temperature_bc!(sim::CavitySimulation)
     Nx, Ny = sim.Nx, sim.Ny
     T = sim.T
     
-    # 左右の壁 (ディリクレ条件: 温度固定)
-    for j in 1:Ny+2
-        # 壁の温度が-0.5,0.5になるように仮想セルを補完
-        T[1, j] = -1.0 - T[2, j]
-        T[Nx+2, j] = 1.0 - T[Nx+1, j]
-    end
-    
-    # 上下の壁 (フォン・ノイマン条件: 勾配0)
-    for i in 1:Nx+2
-        T[i, 1] = T[i, 2]
-        T[i, Ny+2] = T[i, Ny+1]
+    if sim.left_right
+        # 左右の壁 (ディリクレ条件: 温度固定)
+        for j in 1:Ny+2
+            # 壁の温度が-0.5,0.5になるように仮想セルを補完
+            T[1, j] = -1.0 - T[2, j]
+            T[Nx+2, j] = 1.0 - T[Nx+1, j]
+        end
+        
+        # 上下の壁 (フォン・ノイマン条件: 勾配0)
+        for i in 1:Nx+2
+            T[i, 1] = T[i, 2]
+            T[i, Ny+2] = T[i, Ny+1]
+        end
+    else
+        # 上下の壁 (ディリクレ条件: 温度固定)
+        for i in 1:Nx+2
+            # 上下壁の温度が-0.5,0.5になるように仮想セルを補完
+            T[i, 1] = 1.0 - T[i, 2]
+            T[i, Ny+2] = -1.0 - T[i, Ny+1]
+        end
+        
+        # 左右の壁 (フォン・ノイマン条件: 勾配0)
+        for j in 1:Ny+2
+            T[1, j] = T[2, j]
+            T[Nx+2, j] = T[Nx+1, j]
+        end
     end
 end
 
@@ -381,10 +399,10 @@ end
 
 
 function main()
-    Nx, Ny = 60, 60
-    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Nx, dy=1.0/Ny)
+    Nx, Ny = 40, 40
+    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Nx, dy=1.0/Ny, left_right=false)
 
-    target_time = 0.2
+    target_time = 0.5
     total_steps = round(Int, target_time / sim.dt)
     output_interval = total_steps / 100
 
