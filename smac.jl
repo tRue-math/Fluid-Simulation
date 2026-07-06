@@ -331,6 +331,54 @@ function compute_temperature_interior!(sim::CavitySimulation)
     # 更新はここでは行わない
 end
 
+function sample_velocity_vectors(sim::CavitySimulation, Nx::Int, Ny::Int, skip::Int, scale::Float64)
+    xs = Float64[]
+    ys = Float64[]
+    us = Float64[]
+    vs = Float64[]
+
+    @inbounds for i in 1:skip:Nx
+        for j in 1:skip:Ny
+            uc = (sim.u[i, j+1] + sim.u[i+1, j+1]) / 2.0
+            vc = (sim.v[i+1, j] + sim.v[i+1, j+1]) / 2.0
+
+            if uc^2 + vc^2 > 1e-6
+                push!(xs, i)
+                push!(ys, j)
+                push!(us, uc * scale)
+                push!(vs, vc * scale)
+            end
+        end
+    end
+
+    return xs, ys, us, vs
+end
+
+function compute_vorticity_field(sim::CavitySimulation)
+    Nx, Ny = sim.Nx, sim.Ny
+    dx, dy = sim.dx, sim.dy
+
+    uc = zeros(Float64, Nx, Ny)
+    vc = zeros(Float64, Nx, Ny)
+    omega = zeros(Float64, Nx, Ny)
+
+    @inbounds for j in 1:Ny
+        for i in 1:Nx
+            uc[i, j] = (sim.u[i, j+1] + sim.u[i+1, j+1]) / 2.0
+            vc[i, j] = (sim.v[i+1, j] + sim.v[i+1, j+1]) / 2.0
+        end
+    end
+
+    @inbounds for j in 2:Ny-1
+        for i in 2:Nx-1
+            omega[i, j] = (vc[i+1, j] - vc[i-1, j]) / (2.0 * dx) -
+                          (uc[i, j+1] - uc[i, j-1]) / (2.0 * dy)
+        end
+    end
+
+    return omega
+end
+
 
 function main()
     Nx, Ny = 60, 60
@@ -345,6 +393,8 @@ function main()
     # アニメーション用の空の箱を用意
     anim_T = Animation()
     anim_p = Animation()
+    anim_v = Animation()
+    anim_omega = Animation()
 
     for step in 1:total_steps
         step!(sim)
@@ -353,19 +403,7 @@ function main()
             # --- 速度ベクトルの共通計算 ---
             skip = round(Int, Nx / 15)      # 矢印を描く間隔 (全セルに描くと真っ黒になるので間引く)
             scale = 0.05  # 矢印の長さを調整するスケール係数
-            xs, ys, us, vs = Float64[], Float64[], Float64[], Float64[]
-            
-            for i in 1:skip:Nx
-                for j in 1:skip:Ny
-                    uc = (sim.u[i, j+1] + sim.u[i+1, j+1]) / 2.0
-                    vc = (sim.v[i+1, j] + sim.v[i+1, j+1]) / 2.0
-                    
-                    if sqrt(uc^2 + vc^2) > 1e-3
-                        push!(xs, i); push!(ys, j)
-                        push!(us, uc * scale); push!(vs, vc * scale)
-                    end
-                end
-            end
+            xs, ys, us, vs = sample_velocity_vectors(sim, Nx, Ny, skip, scale)
 
             # --- 1. 温度場 (T) のプロット ---
             T_plot = sim.T[2:Nx+1, 2:Ny+1]'
@@ -394,13 +432,43 @@ function main()
             
             quiver!(plt_p, xs, ys, quiver=(us, vs), color=:white, linewidth=1.0)
             frame(anim_p, plt_p)
+
+                    # --- 3. 速度ベクトルのみのプロット ---
+                    plt_v = plot(title=@sprintf("Velocity Vectors - Time: %.3f", step * sim.dt),
+                        aspect_ratio=:equal,
+                        xlims=(1, Nx), ylims=(1, Ny),
+                        framestyle=:box,
+                        legend=false,
+                        background_color=:white)
+
+                    quiver!(plt_v, xs, ys, quiver=(us, vs), color=:black, linewidth=1.2)
+                    frame(anim_v, plt_v)
+
+                    # --- 4. 速度回転(渦度) のプロット ---
+                    omega = compute_vorticity_field(sim)
+                    omega_plot = omega'
+                    omega_max = max(maximum(abs, omega_plot), 1e-12)
+
+                    plt_omega = heatmap(1:Nx, 1:Ny, omega_plot,
+                        title=@sprintf("Vorticity - Time: %.3f", step * sim.dt),
+                        c=:balance,
+                        aspect_ratio=:equal,
+                        xlims=(1, Nx), ylims=(1, Ny),
+                        clim=(-omega_max, omega_max),
+                        colorbar_title="ω",
+                        framestyle=:box)
+
+                    quiver!(plt_omega, xs, ys, quiver=(us, vs), color=:white, linewidth=1.0)
+                    frame(anim_omega, plt_omega)
         end
     end
 
     # GIFアニメーションとして保存
     gif(anim_T, "cavity_flow_T.gif", fps=15)
     gif(anim_p, "cavity_flow_p.gif", fps=15)
-    println("✅ cavity_flow_T.gif と cavity_flow_p.gif の生成が完了しました！")
+                gif(anim_v, "cavity_flow_velocity.gif", fps=15)
+                gif(anim_omega, "cavity_flow_vorticity.gif", fps=15)
+                println("✅ cavity_flow_T.gif, cavity_flow_p.gif, cavity_flow_velocity.gif, cavity_flow_vorticity.gif の生成が完了しました！")
 end
 
 # 実行
