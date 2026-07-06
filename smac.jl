@@ -21,6 +21,9 @@ Base.@kwdef mutable struct CavitySimulation
 
     # 熱源を左右の壁に設定するか、上下の壁に設定するかを切り替えるフラグ
     left_right::Bool
+
+    # 時刻(境界条件を時間依存にするために保持しておく)
+    time::Float64
 end
 
 function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true)
@@ -38,7 +41,7 @@ function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true)
     dt_safe = 0.2 / (1.0/dx^2 + 1.0/dy^2)
 
     sim = CavitySimulation(Nx, Ny, Pr, Ra, dt_safe, dx, dy, omega_opt,
-                           u, v, u_star, v_star, p, p_delta, T, T_new, div, left_right)
+                           u, v, u_star, v_star, p, p_delta, T, T_new, div, left_right, 0.0)
 
     apply_temperature_bc!(sim)
     return sim
@@ -259,9 +262,12 @@ function apply_temperature_bc!(sim::CavitySimulation)
     else
         # 上下の壁 (ディリクレ条件: 温度固定)
         for i in 1:Nx+2
-            # 上下壁の温度が-0.5,0.5になるように仮想セルを補完
-            T[i, 1] = 1.0 - T[i, 2]
+            # 上壁の温度が-0.5になるように仮想セルを補完
             T[i, Ny+2] = -1.0 - T[i, Ny+1]
+            # 下壁の温度が0.25 + 0.25×sin(2πt/0.1)×sin(2π2i/Nx)になるように仮想セルを補完
+            # T[i, 1] = 0.5 + 0.5 * sin(2π * sim.time / 0.1) * sin(2π * 2 * i / Nx) - T[i, 2]
+            # 下壁の温度が0.5になるように仮想セルを補完
+            T[i, 1] = 1.0 - T[i, 2]
         end
         
         # 左右の壁 (フォン・ノイマン条件: 勾配0)
@@ -400,7 +406,7 @@ end
 
 function main()
     Nx, Ny = 40, 40
-    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Nx, dy=1.0/Ny, left_right=false)
+    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Ny, dy=1.0/Ny, left_right=false)
 
     target_time = 0.5
     total_steps = round(Int, target_time / sim.dt)
@@ -415,6 +421,7 @@ function main()
     anim_omega = Animation()
 
     for step in 1:total_steps
+        sim.time = sim.dt * step  # 時刻を更新
         step!(sim)
 
         if step % output_interval == 0
