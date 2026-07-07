@@ -28,9 +28,15 @@ Base.@kwdef mutable struct CavitySimulation
 
     # 並列化モード切替フラグ
     parallel::Bool = true
+
+    # トーラス境界条件を使うかどうかのフラグ
+    torus::Bool = false
 end
 
-function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true, parallel = true)
+function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true, parallel = true, torus = false)
+    if left_right && torus
+        error("左右の壁に熱源を設定する場合は、トーラス境界条件は使用できません。")
+    end
     # スタガード格子と仮想セルを考慮した配列の事前確保
     u = zeros(Nx + 1, Ny + 2); v = zeros(Nx + 2, Ny + 1)
     u_star = zeros(Nx + 1, Ny + 2); v_star = zeros(Nx + 2, Ny + 1)
@@ -42,10 +48,10 @@ function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true, parallel 
     
     omega_opt = 2.0 / (1.0 + sqrt(1.0 - rho_jacobi^2))
 
-    dt_safe = 0.05 / (1.0/dx^2 + 1.0/dy^2)
+    dt_safe = 0.2 / (1.0/dx^2 + 1.0/dy^2)
 
     sim = CavitySimulation(Nx, Ny, Pr, Ra, dt_safe, dx, dy, omega_opt,
-                           u, v, u_star, v_star, p, p_delta, T, T_new, div, left_right, 0.0, parallel)
+                           u, v, u_star, v_star, p, p_delta, T, T_new, div, left_right, 0.0, parallel, torus)
 
     apply_temperature_bc!(sim)
     return sim
@@ -80,23 +86,27 @@ function compute_tentative_velocity_interior!(sim::CavitySimulation)
     Pr, Ra = sim.Pr, sim.Ra
     u, v, p, T = sim.u, sim.v, sim.p, sim.T
     u_star, v_star = sim.u_star, sim.v_star
+    torus = sim.torus
 
     # ==========================================
     # u* の計算 (内部: i = 2:Nx, j = 2:Ny+1)
+    # トーラス境界条件を使う場合はi=1も含める
     # ==========================================
     @inbounds for j in 2:Ny+1
-        for i in 2:Nx
+        for i in (torus ? 1 : 2):Nx
+            pre_i = i == 1 ? Nx : i - 1
+
             # スタガード格子なので，uの位置におけるvの値を補間する
             vv = (v[i, j-1] + v[i+1, j-1] + v[i, j] + v[i+1, j]) / 4.0
 
             # (V･∇)u (移流項) 1次風上差分
-            cnvux = u[i,j] >= 0.0 ? u[i,j] * (u[i,j] - u[i-1,j]) / dx :
+            cnvux = u[i,j] >= 0.0 ? u[i,j] * (u[i,j] - u[pre_i,j]) / dx :
                                     u[i,j] * (u[i+1,j] - u[i,j]) / dx
             cnvuy = vv >= 0.0     ? vv * (u[i,j] - u[i,j-1]) / dy :
                                     vv * (u[i,j+1] - u[i,j]) / dy
 
             # 拡散項 2次中心差分
-            difu = Pr * ( (u[i-1,j] - 2.0*u[i,j] + u[i+1,j]) / dx^2 +
+            difu = Pr * ( (u[pre_i,j] - 2.0*u[i,j] + u[i+1,j]) / dx^2 +
                           (u[i,j-1] - 2.0*u[i,j] + u[i,j+1]) / dy^2 )
 
             # 圧力勾配項
@@ -141,14 +151,18 @@ end
 function apply_velocity_bc!(sim::CavitySimulation)
     Nx, Ny = sim.Nx, sim.Ny
     u_star, v_star = sim.u_star, sim.v_star
+    torus = sim.torus
 
     # ==========================================
     # u_star の境界条件 (サイズ: Nx+1, Ny+2)
     # ==========================================
     @inbounds for j in 1:Ny+2
         # 左右の壁は速度0
-        u_star[1, j]    = 0.0
-        u_star[Nx+1, j] = 0.0
+        # トーラスの場合，計算したi=1の値をi=Nx+1にコピーする
+        if !torus
+            u_star[1, j] = 0.0
+        end
+        u_star[Nx+1, j] = u_star[1, j]
     end
 
     @inbounds for i in 1:Nx+1
@@ -162,8 +176,9 @@ function apply_velocity_bc!(sim::CavitySimulation)
     # ==========================================
     @inbounds for j in 1:Ny+1
         # 左右の壁で速度0になるように，仮想セルを設定
-        v_star[1, j]    = -v_star[2, j]
-        v_star[Nx+2, j] = -v_star[Nx+1, j]
+        # トーラスの場合，反対の値をコピーする
+        v_star[1, j]    = torus ? v_star[Nx+1, j] : -v_star[2, j]
+        v_star[Nx+2, j] = torus ? v_star[2, j] : -v_star[Nx+1, j]
     end
 
     @inbounds for i in 1:Nx+2
@@ -281,11 +296,12 @@ end
 function apply_pressure_bc!(sim::CavitySimulation)
     Nx, Ny = sim.Nx, sim.Ny
     p_delta = sim.p_delta
+    torus = sim.torus
     
     # 左右の壁 (ノイマン条件: 勾配0)
     for j in 1:Ny+2
-        p_delta[1, j] = p_delta[2, j]
-        p_delta[Nx+2, j] = p_delta[Nx+1, j]
+        p_delta[1, j]    = torus ? p_delta[Nx+1, j] : p_delta[2, j]
+        p_delta[Nx+2, j] = torus ? p_delta[2, j] : p_delta[Nx+1, j]
     end
     
     # 上下の壁 (ノイマン条件: 勾配0)
@@ -299,8 +315,10 @@ end
 function apply_temperature_bc!(sim::CavitySimulation)
     Nx, Ny = sim.Nx, sim.Ny
     T = sim.T
+    torus = sim.torus
     
     if sim.left_right
+        @assert !torus "左右の壁に熱源を設定する場合は、トーラス境界条件は使用できません。"
         # 左右の壁 (ディリクレ条件: 温度固定)
         for j in 1:Ny+2
             # 壁の温度が-0.5,0.5になるように仮想セルを補完
@@ -323,11 +341,10 @@ function apply_temperature_bc!(sim::CavitySimulation)
             # 下壁の温度が0.5になるように仮想セルを補完
             T[i, 1] = 1.0 - T[i, 2]
         end
-        
         # 左右の壁 (フォン・ノイマン条件: 勾配0)
         for j in 1:Ny+2
-            T[1, j] = T[2, j]
-            T[Nx+2, j] = T[Nx+1, j]
+            T[1, j]    = torus ? T[Nx+1, j] : T[2, j]
+            T[Nx+2, j] = torus ? T[2, j] : T[Nx+1, j]
         end
     end
 end
@@ -338,12 +355,13 @@ function correct_velocity_and_pressure!(sim::CavitySimulation)
     u, v = sim.u, sim.v
     u_star, v_star = sim.u_star, sim.v_star
     p, p_delta = sim.p, sim.p_delta
+    torus = sim.torus
 
     # ==========================================
     # 1. 速度場 u の修正 (内部セル: i = 2:Nx, j = 2:Ny+1)
     # ==========================================
     @inbounds for j in 2:Ny+1
-        for i in 2:Nx
+        for i in (torus ? 1 : 2):Nx
             # u[i,j] は p[i,j] と p[i+1,j] の境界にある
             grad_p_delta_x = (p_delta[i+1, j] - p_delta[i, j]) / dx
             u[i, j] = u_star[i, j] - dt * grad_p_delta_x
@@ -459,10 +477,10 @@ end
 
 
 function main()
-    Nx, Ny = 160, 80
-    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e5, dx=1.0/Ny, dy=1.0/Ny, left_right=false, parallel=false)
+    Nx, Ny = 160, 40
+    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Ny, dy=1.0/Ny, left_right=false, parallel=true, torus=true)
 
-    target_time = 0.1
+    target_time = 0.5
     total_steps = round(Int, target_time / sim.dt)
     output_interval = total_steps / 100
     
