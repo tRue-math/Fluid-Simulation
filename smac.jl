@@ -1,5 +1,6 @@
 using Printf
 using Plots
+using Base.Threads: Atomic, atomic_add!
 
 Base.@kwdef mutable struct CavitySimulation
     Nx::Int; Ny::Int
@@ -24,9 +25,12 @@ Base.@kwdef mutable struct CavitySimulation
 
     # 時刻(境界条件を時間依存にするために保持しておく)
     time::Float64
+
+    # 並列化モード切替フラグ
+    parallel::Bool = true
 end
 
-function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true)
+function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true, parallel = true)
     # スタガード格子と仮想セルを考慮した配列の事前確保
     u = zeros(Nx + 1, Ny + 2); v = zeros(Nx + 2, Ny + 1)
     u_star = zeros(Nx + 1, Ny + 2); v_star = zeros(Nx + 2, Ny + 1)
@@ -38,10 +42,10 @@ function CavitySimulation(; Nx, Ny, Pr, Ra, dx, dy, left_right = true)
     
     omega_opt = 2.0 / (1.0 + sqrt(1.0 - rho_jacobi^2))
 
-    dt_safe = 0.2 / (1.0/dx^2 + 1.0/dy^2)
+    dt_safe = 0.05 / (1.0/dx^2 + 1.0/dy^2)
 
     sim = CavitySimulation(Nx, Ny, Pr, Ra, dt_safe, dx, dy, omega_opt,
-                           u, v, u_star, v_star, p, p_delta, T, T_new, div, left_right, 0.0)
+                           u, v, u_star, v_star, p, p_delta, T, T_new, div, left_right, 0.0, parallel)
 
     apply_temperature_bc!(sim)
     return sim
@@ -195,31 +199,81 @@ function solve_poisson_sor!(sim::CavitySimulation)
     idy2 = 1.0 / dy^2
     beta = 2.0 * (idx2 + idy2)
     
-    for iter in 1:max_iter
-        residual = 0.0
-        
-        # 内部セルの更新 (行列を組まずに、現在の周囲の値から直接更新)
-        @inbounds for j in 2:Ny+1
-            for i in 2:Nx+1
-                p_delta_old = p_delta[i, j]
-                
-                # 5点差分から導かれる次の値
-                p_delta_new = ((p_delta[i+1, j] + p_delta[i-1, j]) * idx2 +
-                               (p_delta[i, j+1] + p_delta[i, j-1]) * idy2 - div[i, j] / dt) / beta
-                
-                # SOR法の緩和処理
-                p_delta[i, j] = p_delta_old + omega * (p_delta_new - p_delta_old)
-                
-                residual += (p_delta[i, j] - p_delta_old)^2
+    if sim.parallel
+        for iter in 1:max_iter
+            residual = Atomic{Float64}(0.0)
+            
+            # 赤列の更新
+            Threads.@threads for j in 2:2:Ny+1
+                local_residual = 0.0
+                for i in 2:Nx+1
+                    p_delta_old = p_delta[i, j]
+                    
+                    # 5点差分から導かれる次の値
+                    p_delta_new = ((p_delta[i+1, j] + p_delta[i-1, j]) * idx2 +
+                                (p_delta[i, j+1] + p_delta[i, j-1]) * idy2 - div[i, j] / dt) / beta
+                    
+                    # SOR法の緩和処理
+                    p_delta[i, j] = p_delta_old + omega * (p_delta_new - p_delta_old)
+                    
+                    local_residual += (p_delta[i, j] - p_delta_old)^2
+                end
+                atomic_add!(residual, local_residual)
+            end
+            
+            # 黒列の更新
+            Threads.@threads for j in 3:2:Ny+1
+                local_residual = 0.0
+                for i in 2:Nx+1
+                    p_delta_old = p_delta[i, j]
+                    
+                    # 5点差分から導かれる次の値
+                    p_delta_new = ((p_delta[i+1, j] + p_delta[i-1, j]) * idx2 +
+                                (p_delta[i, j+1] + p_delta[i, j-1]) * idy2 - div[i, j] / dt) / beta
+                    
+                    # SOR法の緩和処理
+                    p_delta[i, j] = p_delta_old + omega * (p_delta_new - p_delta_old)
+
+                    local_residual += (p_delta[i, j] - p_delta_old)^2
+                end
+                atomic_add!(residual, local_residual)
+            end
+            
+            # 境界条件を適用 (反復のたびに仮想セルを同期させる)
+            apply_pressure_bc!(sim)
+            
+            # 収束判定
+            if residual[] < eps_p
+                break
             end
         end
-        
-        # 境界条件を適用 (反復のたびに仮想セルを同期させる)
-        apply_pressure_bc!(sim)
-        
-        # 収束判定
-        if residual < eps_p
-            break
+    else
+        for iter in 1:max_iter
+            residual = 0.0
+
+            # 内部セルの更新 (行列を組まずに、現在の周囲の値から直接更新)
+            @inbounds for j in 2:Ny+1
+                for i in 2:Nx+1
+                    p_delta_old = p_delta[i, j]
+                    
+                    # 5点差分から導かれる次の値
+                    p_delta_new = ((p_delta[i+1, j] + p_delta[i-1, j]) * idx2 +
+                                (p_delta[i, j+1] + p_delta[i, j-1]) * idy2 - div[i, j] / dt) / beta
+                    
+                    # SOR法の緩和処理
+                    p_delta[i, j] = p_delta_old + omega * (p_delta_new - p_delta_old)
+                    
+                    residual += (p_delta[i, j] - p_delta_old)^2
+                end
+            end
+
+            # 境界条件を適用 (反復のたびに仮想セルを同期させる)
+            apply_pressure_bc!(sim)
+
+            # 収束判定
+            if residual < eps_p
+                break
+            end
         end
     end
 end
@@ -405,13 +459,14 @@ end
 
 
 function main()
-    Nx, Ny = 40, 40
-    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Ny, dy=1.0/Ny, left_right=false)
+    Nx, Ny = 160, 80
+    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e5, dx=1.0/Ny, dy=1.0/Ny, left_right=false, parallel=false)
 
-    target_time = 0.5
+    target_time = 0.1
     total_steps = round(Int, target_time / sim.dt)
     output_interval = total_steps / 100
-
+    
+    println("Number of threads: ", Threads.nthreads())
     println("流体シミュレーションを実行中...")
     
     # アニメーション用の空の箱を用意
@@ -419,6 +474,9 @@ function main()
     anim_p = Animation()
     anim_v = Animation()
     anim_omega = Animation()
+    
+    # 実行時間を計測
+    elapsed_start = time()
 
     for step in 1:total_steps
         sim.time = sim.dt * step  # 時刻を更新
@@ -494,6 +552,8 @@ function main()
                 gif(anim_v, "cavity_flow_velocity.gif", fps=15)
                 gif(anim_omega, "cavity_flow_vorticity.gif", fps=15)
                 println("✅ cavity_flow_T.gif, cavity_flow_p.gif, cavity_flow_velocity.gif, cavity_flow_vorticity.gif の生成が完了しました！")
+    elapsed_seconds = time() - elapsed_start
+    println(@sprintf("計測にかかった時間: %.3f 秒", elapsed_seconds))
 end
 
 # 実行
