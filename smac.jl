@@ -1,6 +1,7 @@
 using Printf
 using Plots
 using Base.Threads: Atomic, atomic_add!
+using DelimitedFiles
 
 Base.@kwdef mutable struct CavitySimulation
     Nx::Int; Ny::Int
@@ -476,9 +477,9 @@ function compute_vorticity_field(sim::CavitySimulation)
 end
 
 
-function main()
-    Nx, Ny = 160, 40
-    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Ny, dy=1.0/Ny, left_right=false, parallel=true, torus=true)
+function main_local()
+    Nx, Ny = 40, 40
+    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Ny, dy=1.0/Ny, left_right=false, parallel=true, torus=false)
 
     target_time = 0.5
     total_steps = round(Int, target_time / sim.dt)
@@ -574,5 +575,61 @@ function main()
     println(@sprintf("計測にかかった時間: %.3f 秒", elapsed_seconds))
 end
 
+function main_hpc()
+    Nx, Ny = 40, 40
+    sim = CavitySimulation(Nx=Nx, Ny=Ny, Pr=0.71, Ra=7.1e4, dx=1.0/Ny, dy=1.0/Ny, left_right=false, parallel=true, torus=false)
+
+    target_time = 0.5
+    total_steps = round(Int, target_time / sim.dt)
+    output_interval = total_steps / 100
+
+    output_dir = "output_data"
+    isdir(output_dir) || mkdir(output_dir)
+
+    println("=============================================")
+    println(" Wisteria/BDEC-01 シミュレーション開始")
+    println(" Threads   : ", Threads.nthreads())
+    println(" Grid      : $(Nx) x $(Ny)")
+    println(" Steps     : $total_steps")
+    println(" dt        : ", sim.dt)
+    println("=============================================")
+
+    for step in 1:total_steps
+        sim.time = sim.dt * step  # 時刻を更新
+        step!(sim)
+
+        if step % output_interval == 0
+            # 標準出力には「いま何ステップ目か」だけを流す
+            println(@sprintf("Step: %06d / %d (Time: %.4f)", step, total_steps, sim.time))
+            
+            # --- 速度ベクトルの共通計算 ---
+            skip = round(Int, Nx / 15)      # 矢印を描く間隔 (全セルに描くと真っ黒になるので間引く)
+            scale = 0.05  # 矢印の長さを調整するスケール係数
+            xs, ys, us, vs = sample_velocity_vectors(sim, Nx, Ny, skip, scale)
+
+            # ★ 内部セルを抽出して CSVファイルとして書き出す
+            T_plot = sim.T[2:Nx+1, 2:Ny+1]'
+            filename = joinpath(output_dir, @sprintf("T_step_%06d.csv", step))
+            writedlm(filename, T_plot, ',')
+
+            p_plot = sim.p[2:Nx+1, 2:Ny+1]'
+            filename = joinpath(output_dir, @sprintf("p_step_%06d.csv", step))
+            writedlm(filename, p_plot, ',')
+
+            omega = compute_vorticity_field(sim)
+            omega_plot = omega'
+            filename = joinpath(output_dir, @sprintf("omega_step_%06d.csv", step))
+            writedlm(filename, omega_plot, ',')
+
+            # 速度ベクトルのCSV出力
+            velocity_data = hcat(xs, ys, us, vs)
+            filename = joinpath(output_dir, @sprintf("velocity_step_%06d.csv", step))
+            writedlm(filename, velocity_data, ',')
+        end
+    end
+    
+    println("✅ シミュレーション完了！データは '$(output_dir)' に保存されました。")
+end
+
 # 実行
-main()
+main_hpc()
